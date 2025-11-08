@@ -1,0 +1,6 @@
+.venv/
+venv/
+_pycache_/
+dlib-19.24.1-cp311-cp311-win_amd64.whlgit rm -r --cached .
+*.venv
+datasets/
