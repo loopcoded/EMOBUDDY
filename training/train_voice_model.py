@@ -1,105 +1,231 @@
+# training/train_voice_model.py – Colab-ready training script
+import sys
 import os
+
+# ✅ Always add the ROOT of your project
+ROOT_PATH = "/content/EMOBUDDY"
+if ROOT_PATH not in sys.path:
+    sys.path.append(ROOT_PATH)
+
+print("PYTHONPATH:", sys.path)
+
+import os
+import sys
+sys.path.append("/content/EMOBUDDY")  # ensure project imports work in Colab
+
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
+from sklearn.model_selection import train_test_split
+
 from models.voice_emotion_model import VoiceEmotionModel
-from utils.data_preprocessing import load_voice_dataset
+from utils.data_preprocessing import load_voice_dataset   # must return one-hot labels
 from config import config
 
-# --- Configuration ---
-DATA_PATH = 'datasets/voice_emotions/'
-MODEL_SAVE_PATH = config.VOICE_MODEL_PATH
-EMOTIONS = config.EMOTIONS
-NUM_CLASSES = config.NUM_EMOTIONS
+# --------------------------- configuration --------------------------- #
+DATA_PATH        = "/content/datasets/voice_emotions"
+MODEL_SAVE_PATH  = config.VOICE_MODEL_PATH        # e.g., "/content/voice_emotion_model_best.keras"
+EMOTIONS         = config.EMOTIONS                # class list
+NUM_CLASSES      = config.NUM_EMOTIONS
 
-# Voice Feature Parameters (Must match data_preprocessing.py)
-SAMPLE_RATE = config.VOICE_SAMPLE_RATE
-DURATION = config.VOICE_DURATION
-N_MFCC = config.VOICE_N_MFCC
+SAMPLE_RATE      = config.VOICE_SAMPLE_RATE       # e.g., 22050
+DURATION         = config.VOICE_DURATION          # e.g., 3 seconds
+N_MFCC           = config.VOICE_N_MFCC            # e.g., 40
 
-# Hyperparameters
-BATCH_SIZE = 32
-EPOCHS = 200
-LEARNING_RATE = 0.0005
-PATIENCE = 20
-ARCHITECTURE = 'cnn_lstm' # Use cnn_lstm or attention
+BATCH_SIZE       = 16  # Reduced from 32 to help with small dataset
+EPOCHS           = 100  # Reduced from 120
+LEARNING_RATE    = 1e-4  # Reduced from 5e-4 for more stable training
+PATIENCE         = 15  # Increased from 12
+ARCHITECTURE     = "cnn_lstm"   # "cnn", "cnn_lstm", or "attention"
+
+# Optional: mixed precision for speed on T4/A100
+if tf.config.list_physical_devices("GPU"):
+    try:
+        tf.keras.mixed_precision.set_global_policy("mixed_float16")
+    except Exception:
+        pass
+
+def _per_sample_standardize(X):
+    """Standardize each sample to zero mean / unit variance across (freq,time)."""
+    # X shape: (N, n_mfcc, time, 1)
+    eps = 1e-6
+    mean = X.mean(axis=(1,2,3), keepdims=True)
+    std  = X.std(axis=(1,2,3), keepdims=True)
+    return (X - mean) / (std + eps)
+
+def _compute_class_weights(y_onehot):
+    """
+    Compute class weights for imbalanced data.
+    y_onehot: shape (N, C)
+    """
+    counts = y_onehot.sum(axis=0)
+    total  = counts.sum()
+    weights = total / (len(counts) * counts + 1e-8)
+    return {i: float(weights[i]) for i in range(len(counts))}
+
+def add_augmentation(X, y, augment_factor=2):
+    """
+    Simple data augmentation for audio:
+    - Add small amounts of noise
+    - Time shift
+    """
+    X_aug = []
+    y_aug = []
+    
+    for i in range(len(X)):
+        # Original sample
+        X_aug.append(X[i])
+        y_aug.append(y[i])
+        
+        # Create augmented versions
+        for _ in range(augment_factor - 1):
+            sample = X[i].copy()
+            
+            # Add random noise (10% of samples)
+            if np.random.random() > 0.5:
+                noise = np.random.normal(0, 0.005, sample.shape)
+                sample = sample + noise
+            
+            # Random time shift (small)
+            if np.random.random() > 0.5:
+                shift = np.random.randint(-5, 5)
+                sample = np.roll(sample, shift, axis=1)
+            
+            X_aug.append(sample)
+            y_aug.append(y[i])
+    
+    return np.array(X_aug), np.array(y_aug)
 
 def train_voice_model():
-    """Load data, build, compile, and train the VoiceEmotionModel."""
     print("--- Starting Voice Emotion Model Training ---")
-    
-    # 1. Load Data (MFCC features extracted and normalized)
+    print("✅ TensorFlow:", tf.__version__)
+    print("✅ GPU:", tf.config.list_physical_devices('GPU'))
+
+    # ---------------------------- load data ---------------------------- #
     try:
-        # X_train shape will be (samples, n_mfcc, time_steps)
+        # X: (N, n_mfcc, time_steps), y: one-hot (N, C)
         X_train, y_train, X_test, y_test = load_voice_dataset(
-            DATA_PATH, 
-            sample_rate=SAMPLE_RATE, 
-            duration=DURATION, 
-            n_mfcc=N_MFCC, 
-            emotions=EMOTIONS
+            DATA_PATH,
+            sample_rate=SAMPLE_RATE,
+            duration=DURATION,
+            n_mfcc=N_MFCC,
+            emotions=EMOTIONS,
         )
-        
-        # Add channel dimension (required for Conv2D layers in the model)
+
+        # add channel dim for Conv2D
         X_train = np.expand_dims(X_train, axis=-1)
-        X_test = np.expand_dims(X_test, axis=-1)
+        X_test  = np.expand_dims(X_test, axis=-1)
 
-        # Determine input shape dynamically
-        _, n_mfcc, time_steps, channels = X_train.shape
-        INPUT_SHAPE = (n_mfcc, time_steps, channels)
+        # standardize per sample (helps with amplitude variation)
+        X_train = _per_sample_standardize(X_train)
+        X_test  = _per_sample_standardize(X_test)
 
-        print(f"\nCalculated Input Shape: {INPUT_SHAPE}")
+        # Data augmentation to combat overfitting
+        print("\n🔄 Applying data augmentation...")
+        X_train, y_train = add_augmentation(X_train, y_train, augment_factor=2)
+        
+        # Create validation split from training data
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_train, y_train, test_size=0.15, random_state=42, stratify=np.argmax(y_train, axis=1)
+        )
+
+        # sanity logs
+        _, n_mfcc, time_steps, ch = X_train.shape
+        input_shape = (n_mfcc, time_steps, ch)
+        print(f"\n✅ Calculated Input Shape: {input_shape}")
         print(f"Training data shape: {X_train.shape}, Labels: {y_train.shape}")
-        print(f"Testing data shape: {X_test.shape}, Labels: {y_test.shape}")
+        print(f"Validation data shape: {X_val.shape}, Labels: {y_val.shape}")
+        print(f"Testing  data shape: {X_test.shape},  Labels: {y_test.shape}")
     except Exception as e:
-        print(f"ERROR: Could not load voice dataset. Ensure data is in {DATA_PATH}.")
-        print(f"Detail: {e}")
+        print(f"❌ ERROR: Could not load voice dataset at {DATA_PATH}. Detail: {e}")
         return
 
-    # 2. Build Model
-    model_instance = VoiceEmotionModel(
-        num_classes=NUM_CLASSES, 
-        input_shape=INPUT_SHAPE
+    # --------------------------- class weights ------------------------- #
+    class_weight = _compute_class_weights(y_train)
+    print("\n⚖️ Class weights:", class_weight)
+
+    # ------------------------------ model ------------------------------ #
+    # Delete old model file to avoid loading issues
+    if os.path.exists(MODEL_SAVE_PATH):
+        print(f"\n🗑️ Removing old model file: {MODEL_SAVE_PATH}")
+        os.remove(MODEL_SAVE_PATH)
+    
+    model_instance = VoiceEmotionModel(num_classes=NUM_CLASSES, input_shape=input_shape)
+    model = model_instance.build_model(
+        architecture=ARCHITECTURE,
+        l2=1e-3,  # Increased regularization
+        dropout=0.5  # Increased dropout
     )
-    
-    model = model_instance.build_model(architecture=ARCHITECTURE)
-    model_instance.compile_model(learning_rate=LEARNING_RATE)
-    
-    print(f"\nModel Summary (Architecture: {ARCHITECTURE}):")
+    model_instance.compile_model(
+        learning_rate=LEARNING_RATE, 
+        label_smoothing=0.1  # Increased label smoothing
+    )
+
+    print(f"\n📊 Model Summary (Architecture: {ARCHITECTURE}):")
     model_instance.get_model_summary()
 
-    # 3. Training
-    print("\n--- Model Training Started ---")
-    
-    # Get callbacks
+    # ----------------------------- training ---------------------------- #
     callbacks = model_instance.get_callbacks(MODEL_SAVE_PATH, patience=PATIENCE)
-    
-    # Fit model
+
+    # shuffle once up-front (in case loader didn't)
+    idx = np.arange(len(X_train))
+    np.random.shuffle(idx)
+    X_train, y_train = X_train[idx], y_train[idx]
+
+    print("\n🔥 Training started…\n")
     history = model.fit(
         X_train, y_train,
         batch_size=BATCH_SIZE,
         epochs=EPOCHS,
-        validation_data=(X_test, y_test),
-        callbacks=callbacks
+        validation_data=(X_val, y_val),  # Use validation split, not test
+        callbacks=callbacks,
+        class_weight=class_weight,
+        verbose=1,
     )
-    
-    print("\n--- Training Complete ---")
-    
-    # 4. Evaluate and Save
-    try:
-        # Load the best model saved by the callback
-        model_instance.load_model(MODEL_SAVE_PATH)
-        loss, acc, top2_acc, precision, recall, auc = model.evaluate(X_test, y_test, verbose=0)
-        
-        print("\nFinal Evaluation on Test Data (using best model):")
-        print(f"  Loss: {loss:.4f}")
-        print(f"  Accuracy: {acc*100:.2f}%")
-        print(f"  Top-2 Accuracy: {top2_acc*100:.2f}%")
-        print(f"  Precision: {precision:.4f}")
-        print(f"  Recall: {recall:.4f}")
-        print(f"  AUC: {auc:.4f}")
-        print(f"\nBEST Model saved to: {MODEL_SAVE_PATH}")
-    except Exception as e:
-        print(f"ERROR during evaluation or model loading: {e}")
 
-if __name__ == '__main__':
+    print("\n✅ --- Training Complete ---")
+
+    # ---------------------------- evaluation --------------------------- #
+    try:
+        # Build a fresh model with the same architecture
+        print("\n🔄 Loading best model...")
+        model_instance_eval = VoiceEmotionModel(num_classes=NUM_CLASSES, input_shape=input_shape)
+        model_instance_eval.build_model(
+            architecture=ARCHITECTURE,
+            l2=1e-3,
+            dropout=0.5
+        )
+        model_instance_eval.load_model(MODEL_SAVE_PATH)
+        
+        # Evaluate on test set
+        print("\n📊 Evaluating on TEST set (unseen data):")
+        results = model_instance_eval.model.evaluate(X_test, y_test, verbose=0)
+        metric_names = ["Loss", "Accuracy", "Top-2 Acc", "Precision", "Recall", "AUC"]
+        print("\n🏆 Final Evaluation (best checkpoint on TEST set):")
+        for name, val in zip(metric_names, results):
+            if "Acc" in name or name in ("Accuracy", "Top-2 Acc"):
+                print(f"{name:>12}: {val*100:.2f}%")
+            else:
+                print(f"{name:>12}: {val:.4f}")
+        
+        # Also evaluate on validation set
+        print("\n📊 Evaluating on VALIDATION set:")
+        results_val = model_instance_eval.model.evaluate(X_val, y_val, verbose=0)
+        print("\n🏆 Validation Performance:")
+        for name, val in zip(metric_names, results_val):
+            if "Acc" in name or name in ("Accuracy", "Top-2 Acc"):
+                print(f"{name:>12}: {val*100:.2f}%")
+            else:
+                print(f"{name:>12}: {val:.4f}")
+        
+        print(f"\n💾 Best model saved to: {MODEL_SAVE_PATH}")
+    except Exception as e:
+        print(f"❌ ERROR during evaluation or model loading: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+if __name__ == "__main__":
+    # make sure output directory exists
+    os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)
     train_voice_model()

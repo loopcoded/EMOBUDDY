@@ -1,7 +1,7 @@
 import os
 import tensorflow as tf
 from tensorflow import keras
-from keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from models.face_emotion_model import FaceEmotionModel, get_data_augmentation
 from utils.data_preprocessing import load_face_dataset
 from config import config
@@ -43,7 +43,7 @@ def train_face_model():
     )
     
     # Use transfer learning for best results on small, specialized datasets
-    model = model_instance.build_model(use_transfer_learning=True)
+    model = model_instance.build_model(use_transfer_learning=False)
     model_instance.compile_model(learning_rate=LEARNING_RATE)
     
     print("\nModel Summary:")
