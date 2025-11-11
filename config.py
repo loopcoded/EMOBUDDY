@@ -11,11 +11,12 @@ class Config:
     
     # Emotion Definitions
     EMOTIONS = ['angry', 'happy', 'disgust', 'fear', 'sad', 'surprise', 'neutral']
+    MODEL_EMOTIONS = EMOTIONS  # Alias for compatibility
     NUM_EMOTIONS = len(EMOTIONS)
 
-    # Model Paths (Must match where training scripts save the models)
-    FACE_MODEL_PATH = 'static/models/face_emotion_model.h5'
-    VOICE_MODEL_PATH = 'static/models/voice_emotion_model.h5'
+    # Model Paths - FIXED: Use .keras format (TensorFlow 2.x standard)
+    FACE_MODEL_PATH = 'static/models/face_emotion_model_best.keras'
+    VOICE_MODEL_PATH = 'static/models/voice_emotion_model_best.keras'
     
     # Real-time Monitoring Parameters
     FACE_DETECTION_INTERVAL = 0.5  # Process face every 0.5 seconds
@@ -79,5 +80,4 @@ def get_config(env):
     return DevelopmentConfig
 
 # Create a global config instance for easy import in other files
-# This is crucial for the Service to access its parameters
 config = DevelopmentConfig()

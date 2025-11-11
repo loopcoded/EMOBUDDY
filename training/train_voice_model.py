@@ -2,28 +2,24 @@
 import sys
 import os
 
-# ✅ Always add the ROOT of your project
-ROOT_PATH = "/content/EMOBUDDY"
-if ROOT_PATH not in sys.path:
-    sys.path.append(ROOT_PATH)
-
 print("PYTHONPATH:", sys.path)
-
-import os
-import sys
-sys.path.append("/content/EMOBUDDY")  # ensure project imports work in Colab
 
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from sklearn.model_selection import train_test_split
 
+ROOT_PATH = os.path.dirname(os.path.abspath(__file__))
+if "training" in ROOT_PATH:
+    ROOT_PATH = os.path.abspath(os.path.join(ROOT_PATH, os.pardir))
+if ROOT_PATH not in sys.path:
+    sys.path.append(ROOT_PATH)
 from models.voice_emotion_model import VoiceEmotionModel
 from utils.data_preprocessing import load_voice_dataset   # must return one-hot labels
 from config import config
 
 # --------------------------- configuration --------------------------- #
-DATA_PATH        = "/content/datasets/voice_emotions"
+DATA_PATH        = "datasets/voice_emotions"
 MODEL_SAVE_PATH  = config.VOICE_MODEL_PATH        # e.g., "/content/voice_emotion_model_best.keras"
 EMOTIONS         = config.EMOTIONS                # class list
 NUM_CLASSES      = config.NUM_EMOTIONS
