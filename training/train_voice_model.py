@@ -1,4 +1,4 @@
-# training/train_voice_model.py – Colab-ready training script
+# training/train_voice_model.py â€“ Colab-ready training script
 import sys
 import os
 
@@ -94,8 +94,8 @@ def add_augmentation(X, y, augment_factor=2):
 
 def train_voice_model():
     print("--- Starting Voice Emotion Model Training ---")
-    print("✅ TensorFlow:", tf.__version__)
-    print("✅ GPU:", tf.config.list_physical_devices('GPU'))
+    print("âœ… TensorFlow:", tf.__version__)
+    print("âœ… GPU:", tf.config.list_physical_devices('GPU'))
 
     # ---------------------------- load data ---------------------------- #
     try:
@@ -117,7 +117,7 @@ def train_voice_model():
         X_test  = _per_sample_standardize(X_test)
 
         # Data augmentation to combat overfitting
-        print("\n🔄 Applying data augmentation...")
+        print("\nðŸ”„ Applying data augmentation...")
         X_train, y_train = add_augmentation(X_train, y_train, augment_factor=2)
         
         # Create validation split from training data
@@ -128,22 +128,22 @@ def train_voice_model():
         # sanity logs
         _, n_mfcc, time_steps, ch = X_train.shape
         input_shape = (n_mfcc, time_steps, ch)
-        print(f"\n✅ Calculated Input Shape: {input_shape}")
+        print(f"\nâœ… Calculated Input Shape: {input_shape}")
         print(f"Training data shape: {X_train.shape}, Labels: {y_train.shape}")
         print(f"Validation data shape: {X_val.shape}, Labels: {y_val.shape}")
         print(f"Testing  data shape: {X_test.shape},  Labels: {y_test.shape}")
     except Exception as e:
-        print(f"❌ ERROR: Could not load voice dataset at {DATA_PATH}. Detail: {e}")
+        print(f"âŒ ERROR: Could not load voice dataset at {DATA_PATH}. Detail: {e}")
         return
 
     # --------------------------- class weights ------------------------- #
     class_weight = _compute_class_weights(y_train)
-    print("\n⚖️ Class weights:", class_weight)
+    print("\nâš–ï¸ Class weights:", class_weight)
 
     # ------------------------------ model ------------------------------ #
     # Delete old model file to avoid loading issues
     if os.path.exists(MODEL_SAVE_PATH):
-        print(f"\n🗑️ Removing old model file: {MODEL_SAVE_PATH}")
+        print(f"\nðŸ—‘ï¸ Removing old model file: {MODEL_SAVE_PATH}")
         os.remove(MODEL_SAVE_PATH)
     
     model_instance = VoiceEmotionModel(num_classes=NUM_CLASSES, input_shape=input_shape)
@@ -157,7 +157,7 @@ def train_voice_model():
         label_smoothing=0.1  # Increased label smoothing
     )
 
-    print(f"\n📊 Model Summary (Architecture: {ARCHITECTURE}):")
+    print(f"\nðŸ“Š Model Summary (Architecture: {ARCHITECTURE}):")
     model_instance.get_model_summary()
 
     # ----------------------------- training ---------------------------- #
@@ -168,7 +168,7 @@ def train_voice_model():
     np.random.shuffle(idx)
     X_train, y_train = X_train[idx], y_train[idx]
 
-    print("\n🔥 Training started…\n")
+    print("\nðŸ”¥ Training startedâ€¦\n")
     history = model.fit(
         X_train, y_train,
         batch_size=BATCH_SIZE,
@@ -179,12 +179,12 @@ def train_voice_model():
         verbose=1,
     )
 
-    print("\n✅ --- Training Complete ---")
+    print("\nâœ… --- Training Complete ---")
 
     # ---------------------------- evaluation --------------------------- #
     try:
         # Build a fresh model with the same architecture
-        print("\n🔄 Loading best model...")
+        print("\nðŸ”„ Loading best model...")
         model_instance_eval = VoiceEmotionModel(num_classes=NUM_CLASSES, input_shape=input_shape)
         model_instance_eval.build_model(
             architecture=ARCHITECTURE,
@@ -194,10 +194,10 @@ def train_voice_model():
         model_instance_eval.load_model(MODEL_SAVE_PATH)
         
         # Evaluate on test set
-        print("\n📊 Evaluating on TEST set (unseen data):")
+        print("\nðŸ“Š Evaluating on TEST set (unseen data):")
         results = model_instance_eval.model.evaluate(X_test, y_test, verbose=0)
         metric_names = ["Loss", "Accuracy", "Top-2 Acc", "Precision", "Recall", "AUC"]
-        print("\n🏆 Final Evaluation (best checkpoint on TEST set):")
+        print("\nðŸ† Final Evaluation (best checkpoint on TEST set):")
         for name, val in zip(metric_names, results):
             if "Acc" in name or name in ("Accuracy", "Top-2 Acc"):
                 print(f"{name:>12}: {val*100:.2f}%")
@@ -205,18 +205,18 @@ def train_voice_model():
                 print(f"{name:>12}: {val:.4f}")
         
         # Also evaluate on validation set
-        print("\n📊 Evaluating on VALIDATION set:")
+        print("\nðŸ“Š Evaluating on VALIDATION set:")
         results_val = model_instance_eval.model.evaluate(X_val, y_val, verbose=0)
-        print("\n🏆 Validation Performance:")
+        print("\nðŸ† Validation Performance:")
         for name, val in zip(metric_names, results_val):
             if "Acc" in name or name in ("Accuracy", "Top-2 Acc"):
                 print(f"{name:>12}: {val*100:.2f}%")
             else:
                 print(f"{name:>12}: {val:.4f}")
         
-        print(f"\n💾 Best model saved to: {MODEL_SAVE_PATH}")
+        print(f"\nðŸ’¾ Best model saved to: {MODEL_SAVE_PATH}")
     except Exception as e:
-        print(f"❌ ERROR during evaluation or model loading: {e}")
+        print(f"âŒ ERROR during evaluation or model loading: {e}")
         import traceback
         traceback.print_exc()
 

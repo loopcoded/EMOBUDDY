@@ -1,230 +1,206 @@
 """
-Dataset diagnostic tool to identify issues causing overfitting
+diagnostics/diagnose_voice_model.py - Diagnose voice model issues
 """
-
 import os
 import sys
-from pathlib import Path
 import numpy as np
-import cv2
 from collections import Counter
 
-# Add project root to path
-PROJECT_ROOT = Path(__file__).parent
-sys.path.insert(0, str(PROJECT_ROOT))
+ROOT_PATH = os.path.dirname(os.path.abspath(__file__))
+if "diagnostics" in ROOT_PATH:
+    ROOT_PATH = os.path.abspath(os.path.join(ROOT_PATH, os.pardir))
+if ROOT_PATH not in sys.path:
+    sys.path.append(ROOT_PATH)
 
+from models.voice_emotion_model import VoiceEmotionModel
+from utils.data_preprocessing import load_voice_dataset
 from config import config
 
-def analyze_dataset(dataset_path, emotions):
-    """Analyze dataset for common issues."""
+
+def diagnose_voice_model():
+    """Diagnose issues with voice emotion model"""
     
-    print("="*70)
-    print("DATASET DIAGNOSTIC TOOL")
-    print("="*70)
+    print("=" * 60)
+    print("VOICE MODEL DIAGNOSTICS")
+    print("=" * 60)
     
-    train_path = os.path.join(dataset_path, 'train')
-    test_path = os.path.join(dataset_path, 'test')
+    emotions = config.EMOTIONS
     
-    # Check if paths exist
-    if not os.path.exists(train_path):
-        print(f"❌ Training path not found: {train_path}")
+    # Load model
+    print("\n1. Loading voice model...")
+    model_path = 'static/models/voice_emotion_model_best.keras'
+    
+    if not os.path.exists(model_path):
+        print(f"❌ Model not found: {model_path}")
         return
-    if not os.path.exists(test_path):
-        print(f"❌ Test path not found: {test_path}")
+    
+    try:
+        voice_model = VoiceEmotionModel(
+            num_classes=len(emotions),
+            input_shape=(40, 128, 1)
+        )
+        voice_model.load_model(model_path)
+        print("✅ Model loaded")
+    except Exception as e:
+        print(f"❌ Error loading model: {e}")
         return
     
-    print(f"✅ Dataset path: {dataset_path}\n")
+    # Load test data
+    print("\n2. Loading test data...")
+    _, _, X_test, y_test = load_voice_dataset(
+        'datasets/voice_emotions/',
+        sample_rate=22050,
+        duration=3,
+        n_mfcc=40,
+        n_mels=128
+    )
     
-    # Analyze train and test splits
-    train_stats = analyze_split(train_path, emotions, "TRAIN")
-    test_stats = analyze_split(test_path, emotions, "TEST")
+    if X_test.ndim == 2:
+        X_test = np.expand_dims(X_test, axis=-1)
     
-    # Check for issues
-    print("\n" + "="*70)
-    print("🔍 ISSUE DETECTION")
-    print("="*70)
+    print(f"   Test samples: {len(X_test)}")
+    print(f"   Test shape: {X_test.shape}")
     
-    issues_found = False
+    # Check true label distribution
+    print("\n3. True label distribution:")
+    y_true_classes = np.argmax(y_test, axis=1)
+    true_counts = Counter(y_true_classes)
+    for cls_idx, count in sorted(true_counts.items()):
+        print(f"   {emotions[cls_idx]:10s}: {count:4d} samples")
     
-    # 1. Class imbalance
-    print("\n1️⃣ Class Imbalance Check:")
-    train_counts = train_stats['counts']
-    test_counts = test_stats['counts']
+    # Get predictions
+    print("\n4. Getting model predictions...")
+    predictions = []
+    raw_outputs = []
     
-    if train_counts:
-        max_count = max(train_counts.values())
-        min_count = min(train_counts.values())
-        imbalance_ratio = max_count / min_count if min_count > 0 else float('inf')
+    for i in range(len(X_test)):
+        pred = voice_model.predict(X_test[i])
+        predictions.append(np.argmax(pred))
+        raw_outputs.append(pred)
         
-        if imbalance_ratio > 3:
-            print(f"   ⚠️  SEVERE imbalance detected! Ratio: {imbalance_ratio:.1f}:1")
-            print(f"   Most common: {max(train_counts, key=train_counts.get)} ({max_count})")
-            print(f"   Least common: {min(train_counts, key=train_counts.get)} ({min_count})")
-            print("\n   💡 Solutions:")
-            print("      - Use class_weights in training")
-            print("      - Augment minority classes more")
-            print("      - Collect more balanced data")
-            issues_found = True
-        else:
-            print(f"   ✅ Acceptable balance (ratio: {imbalance_ratio:.1f}:1)")
+        if (i + 1) % 100 == 0:
+            print(f"   Processed: {i+1}/{len(X_test)}")
     
-    # 2. Dataset size
-    print("\n2️⃣ Dataset Size Check:")
-    total_train = sum(train_counts.values())
-    total_test = sum(test_counts.values())
+    predictions = np.array(predictions)
+    raw_outputs = np.array(raw_outputs)
     
-    if total_train < 1000:
-        print(f"   ⚠️  VERY SMALL training set: {total_train} images")
-        print("   💡 Minimum recommended: 1000+ images")
-        print("      - Use heavy data augmentation")
-        print("      - Consider transfer learning")
-        print("      - Reduce model complexity")
-        issues_found = True
-    elif total_train < 5000:
-        print(f"   ⚠️  Small training set: {total_train} images")
-        print("   💡 Consider using data augmentation and regularization")
-        issues_found = True
-    else:
-        print(f"   ✅ Good training set size: {total_train} images")
+    # Check prediction distribution
+    print("\n5. Predicted label distribution:")
+    pred_counts = Counter(predictions)
+    for cls_idx, count in sorted(pred_counts.items()):
+        print(f"   {emotions[cls_idx]:10s}: {count:4d} samples ({count/len(predictions)*100:.1f}%)")
     
-    if total_test < 200:
-        print(f"   ⚠️  Small test set: {total_test} images")
-        print("   💡 Recommended: 20-30% of training size")
-        issues_found = True
+    # Check if model is stuck
+    unique_predictions = len(set(predictions))
+    print(f"\n6. Unique predictions: {unique_predictions} out of {len(emotions)} possible")
     
-    # 3. Train/Test split ratio
-    print("\n3️⃣ Train/Test Split Check:")
-    if total_train > 0 and total_test > 0:
-        split_ratio = total_test / (total_train + total_test)
-        if split_ratio < 0.1 or split_ratio > 0.4:
-            print(f"   ⚠️  Unusual split ratio: {split_ratio*100:.1f}% test")
-            print("   💡 Recommended: 15-30% test")
-            issues_found = True
-        else:
-            print(f"   ✅ Good split ratio: {split_ratio*100:.1f}% test")
+    if unique_predictions == 1:
+        print("   ⚠️ WARNING: Model is predicting ONLY ONE CLASS!")
+        print("   This indicates severe model collapse.")
+    elif unique_predictions < len(emotions) / 2:
+        print(f"   ⚠️ WARNING: Model only uses {unique_predictions} out of {len(emotions)} classes")
     
-    # 4. Image quality issues
-    print("\n4️⃣ Image Quality Check:")
-    quality_issues = check_image_quality(train_path, emotions)
-    if quality_issues:
-        print("   ⚠️  Quality issues detected:")
-        for issue in quality_issues:
-            print(f"      - {issue}")
-        issues_found = True
-    else:
-        print("   ✅ No obvious quality issues")
+    # Analyze raw outputs
+    print("\n7. Raw output statistics:")
+    print(f"   Min probability: {raw_outputs.min():.6f}")
+    print(f"   Max probability: {raw_outputs.max():.6f}")
+    print(f"   Mean probability: {raw_outputs.mean():.6f}")
+    print(f"   Std probability: {raw_outputs.std():.6f}")
     
-    # 5. Data leakage check
-    print("\n5️⃣ Potential Data Leakage Check:")
-    if check_potential_duplicates(train_path, test_path, emotions):
-        print("   ⚠️  Possible duplicate images between train/test")
-        print("   💡 This can cause overfitting - review your split")
-        issues_found = True
-    else:
-        print("   ✅ No obvious duplicates detected")
+    # Check for extreme probabilities (softmax saturation)
+    max_probs = np.max(raw_outputs, axis=1)
+    print(f"\n8. Confidence distribution:")
+    print(f"   Mean max prob: {max_probs.mean():.4f}")
+    print(f"   Median max prob: {np.median(max_probs):.4f}")
+    print(f"   Probabilities > 0.99: {np.sum(max_probs > 0.99)} samples")
+    print(f"   Probabilities > 0.999: {np.sum(max_probs > 0.999)} samples")
     
-    # Summary
-    print("\n" + "="*70)
-    if issues_found:
-        print("⚠️  ISSUES FOUND - See recommendations above")
-        print("\n📋 Quick Fixes to Try:")
-        print("   1. Use the improved model (face_emotion_model_improved.py)")
-        print("   2. Reduce batch size to 32 or 16")
-        print("   3. Use stronger regularization (already in improved model)")
-        print("   4. Reduce model complexity")
-        print("   5. Add more data augmentation")
-        print("   6. Use class weights for imbalanced classes")
-    else:
-        print("✅ Dataset looks good! If still overfitting:")
-        print("   - Reduce model complexity")
-        print("   - Increase dropout rates")
-        print("   - Use stronger L2 regularization")
-    print("="*70)
-
-
-def analyze_split(split_path, emotions, split_name):
-    """Analyze a single split (train or test)."""
-    print(f"\n📊 {split_name} SET ANALYSIS:")
-    print("-" * 70)
+    if max_probs.mean() > 0.99:
+        print("   ⚠️ WARNING: Model is overconfident (softmax saturation)")
     
-    counts = {}
-    total = 0
+    # Sample predictions
+    print("\n9. Sample predictions (first 10):")
+    for i in range(min(10, len(X_test))):
+        true_idx = y_true_classes[i]
+        pred_idx = predictions[i]
+        confidence = max_probs[i]
+        
+        status = "✓" if true_idx == pred_idx else "✗"
+        print(f"   {status} Sample {i}: True={emotions[true_idx]:10s} | "
+              f"Pred={emotions[pred_idx]:10s} | Conf={confidence:.4f}")
     
-    for emotion in emotions:
-        emotion_path = os.path.join(split_path, emotion)
-        if os.path.exists(emotion_path):
-            files = [f for f in os.listdir(emotion_path) 
-                    if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-            count = len(files)
-            counts[emotion] = count
-            total += count
-            print(f"   {emotion:12s}: {count:5d} images")
-        else:
-            counts[emotion] = 0
-            print(f"   {emotion:12s}: ❌ folder missing")
-    
-    print(f"   {'TOTAL':12s}: {total:5d} images")
-    
-    return {'counts': counts, 'total': total}
-
-
-def check_image_quality(split_path, emotions):
-    """Check for common image quality issues."""
-    issues = []
-    
-    # Sample check on first 10 images of each emotion
-    for emotion in emotions:
-        emotion_path = os.path.join(split_path, emotion)
-        if not os.path.exists(emotion_path):
+    # Accuracy per class
+    print("\n10. Per-class accuracy:")
+    for cls_idx, emotion in enumerate(emotions):
+        mask = y_true_classes == cls_idx
+        if np.sum(mask) == 0:
             continue
         
-        files = [f for f in os.listdir(emotion_path) 
-                if f.lower().endswith(('.png', '.jpg', '.jpeg'))][:10]
-        
-        for file in files:
-            img_path = os.path.join(emotion_path, file)
-            try:
-                img = cv2.imread(img_path)
-                if img is None:
-                    issues.append(f"Corrupted image: {emotion}/{file}")
-                    continue
-                
-                # Check if image is too small
-                if img.shape[0] < 48 or img.shape[1] < 48:
-                    issues.append(f"Very small image: {emotion}/{file} ({img.shape})")
-                
-                # Check if image is grayscale when expecting color
-                if len(img.shape) == 2:
-                    issues.append(f"Grayscale image found: {emotion}/{file}")
-                
-            except Exception as e:
-                issues.append(f"Error reading {emotion}/{file}: {e}")
+        class_acc = np.sum(predictions[mask] == cls_idx) / np.sum(mask)
+        print(f"   {emotion:10s}: {class_acc:.4f} ({np.sum(mask)} samples)")
     
-    return issues[:5]  # Return first 5 issues
-
-
-def check_potential_duplicates(train_path, test_path, emotions):
-    """Simple check for potential duplicates (by filename)."""
-    train_files = set()
-    test_files = set()
+    # Overall accuracy
+    accuracy = np.sum(predictions == y_true_classes) / len(y_true_classes)
+    print(f"\n11. Overall accuracy: {accuracy:.4f}")
     
-    for emotion in emotions:
-        train_emotion = os.path.join(train_path, emotion)
-        test_emotion = os.path.join(test_path, emotion)
-        
-        if os.path.exists(train_emotion):
-            train_files.update(os.listdir(train_emotion))
-        
-        if os.path.exists(test_emotion):
-            test_files.update(os.listdir(test_emotion))
+    # Diagnosis summary
+    print("\n" + "=" * 60)
+    print("DIAGNOSIS SUMMARY")
+    print("=" * 60)
     
-    duplicates = train_files.intersection(test_files)
-    return len(duplicates) > 0
+    issues = []
+    
+    if unique_predictions <= 2:
+        issues.append("❌ CRITICAL: Model collapsed to predicting 1-2 classes only")
+        issues.append("   → Retrain with class weights or balanced sampling")
+    
+    if max_probs.mean() > 0.99:
+        issues.append("❌ CRITICAL: Softmax saturation (overconfidence)")
+        issues.append("   → Add temperature scaling or label smoothing")
+    
+    if accuracy < 0.3:
+        issues.append("❌ CRITICAL: Accuracy below random guessing")
+        issues.append("   → Check data preprocessing and model architecture")
+    
+    # Check for class imbalance
+    max_count = max(true_counts.values())
+    min_count = min(true_counts.values())
+    if max_count / min_count > 5:
+        issues.append(f"⚠️  WARNING: Severe class imbalance ({max_count}/{min_count} = {max_count/min_count:.1f}x)")
+        issues.append("   → Use class weights or oversampling")
+    
+    if not issues:
+        print("✅ No critical issues detected!")
+    else:
+        print("\nIssues found:")
+        for issue in issues:
+            print(issue)
+    
+    # Recommendations
+    print("\n" + "=" * 60)
+    print("RECOMMENDATIONS")
+    print("=" * 60)
+    
+    print("\n1. Immediate fixes:")
+    print("   - Retrain voice model with balanced class weights")
+    print("   - Add label smoothing (0.1)")
+    print("   - Increase dropout (0.5+)")
+    print("   - Use focal loss to handle class imbalance")
+    
+    print("\n2. Data improvements:")
+    print("   - Balance dataset using oversampling for minority classes")
+    print("   - Add data augmentation (noise, time stretch, pitch shift)")
+    print("   - Verify audio preprocessing is consistent")
+    
+    print("\n3. Model improvements:")
+    print("   - Reduce model capacity to prevent overfitting")
+    print("   - Add batch normalization")
+    print("   - Use learning rate scheduling")
+    
+    print("\n4. For fusion:")
+    print("   - Until voice model is fixed, use face-only predictions")
+    print("   - Or set face_weight=0.9, voice_weight=0.1 in fusion")
 
 
 if __name__ == "__main__":
-    # Analyze face dataset
-    dataset_path = 'datasets/face_emotions/'
-    emotions = config.EMOTIONS
-    
-    analyze_dataset(dataset_path, emotions)
+    diagnose_voice_model()

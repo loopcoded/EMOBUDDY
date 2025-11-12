@@ -20,17 +20,34 @@ from config import config
 # FACE PREPROCESSING
 # ============================================
 
-def preprocess_face_image(image, target_size=(48, 48)):
-    """Preprocess a face image for emotion recognition."""
-    if len(image.shape) == 3 and image.shape[2] == 3:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = image
+import cv2
+import numpy as np
+from tensorflow import keras
+from config import config
+import os
 
+def preprocess_face_image(image, target_size=(96, 96)):
+    """
+    Preprocess a face image for emotion recognition.
+    - Converts BGR → RGB
+    - Ensures proper grayscale conversion
+    - Resizes to 96×96 for better CNN feature extraction
+    - Returns pixel values in [0, 255] (no normalization)
+    """
+    # Ensure image is loaded correctly
+    if image is None:
+        raise ValueError("Input image is None")
+
+    # Convert BGR → RGB before grayscale
+    rgb_img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    gray = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2GRAY)
+
+    # Resize and expand back to 3 channels
     resized = cv2.resize(gray, target_size, interpolation=cv2.INTER_AREA)
     rgb = cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
-    normalized = rgb.astype(np.float32) / 255.0
-    return normalized
+
+    # Do NOT normalize here — MobileNet will handle it
+    return rgb.astype(np.float32)
 
 
 def detect_faces_in_image(image, face_cascade_path=None):
@@ -68,10 +85,10 @@ def extract_face_from_frame(frame, face_bbox, margin=0.2):
     return preprocess_face_image(face)
 
 
-def load_face_dataset(dataset_path, img_size=(48, 48), emotions=None):
+def load_face_dataset(dataset_path, img_size=(96, 96), emotions=None):
     """Load face emotion dataset from directory structure."""
     if emotions is None:
-        emotions = config.MODEL_EMOTIONS
+        emotions = config.EMOTIONS  # unified reference
 
     def load_images_from_folder(folder_path):
         images, labels = [], []
@@ -87,7 +104,6 @@ def load_face_dataset(dataset_path, img_size=(48, 48), emotions=None):
             for img_file in os.listdir(emotion_path):
                 if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
                     img_path = os.path.join(emotion_path, img_file)
-
                     try:
                         img = cv2.imread(img_path)
                         if img is None:
@@ -108,6 +124,8 @@ def load_face_dataset(dataset_path, img_size=(48, 48), emotions=None):
     y_train = keras.utils.to_categorical(y_train, len(emotions))
     y_test = keras.utils.to_categorical(y_test, len(emotions))
 
+    print(f"✅ Loaded {len(X_train)} training and {len(X_test)} test images.")
+    print(f"📏 Image shape: {X_train.shape[1:]}")
     return X_train, y_train, X_test, y_test
 
 
