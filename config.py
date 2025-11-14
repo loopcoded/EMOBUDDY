@@ -16,7 +16,7 @@ class Config:
 
     # Model Paths - FIXED: Use .keras format (TensorFlow 2.x standard)
     FACE_MODEL_PATH = 'static/models/face_emotion_model_best.keras'
-    VOICE_MODEL_PATH = 'static/models/voice_emotion_model_best.keras'
+    VOICE_MODEL_PATH = 'static/models/voice_emotion_model_best'
     
     # Real-time Monitoring Parameters
     FACE_DETECTION_INTERVAL = 0.5  # Process face every 0.5 seconds

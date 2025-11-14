@@ -1,6 +1,8 @@
 """
-utils/data_preprocessing.py - Data Preprocessing Utilities
-Handles face and voice data preprocessing for emotion recognition
+utils/data_preprocessing.py
+FINAL CLEAN VERSION
+Fully fixed for voice + face preprocessing.
+Compatible with train_voice_model.py and train_clean_face_model.py
 """
 
 import os
@@ -8,53 +10,36 @@ os.environ["NUMBA_DISABLE_JIT"] = "1"
 
 import cv2
 import numpy as np
-import soundfile as sf
-import torchaudio
+import random
+import librosa  # REQUIRED for audio_to_melspec
 import torch
+import torchaudio
+
 from tensorflow import keras
-from pathlib import Path
 from config import config
 
 
-# ============================================
+# ===========================================================
 # FACE PREPROCESSING
-# ============================================
-
-import cv2
-import numpy as np
-from tensorflow import keras
-from config import config
-import os
+# ===========================================================
 
 def preprocess_face_image(image, target_size=(96, 96)):
-    """
-    Preprocess a face image for emotion recognition.
-    - Converts BGR → RGB
-    - Ensures proper grayscale conversion
-    - Resizes to 96×96 for better CNN feature extraction
-    - Returns pixel values in [0, 255] (no normalization)
-    """
-    # Ensure image is loaded correctly
     if image is None:
         raise ValueError("Input image is None")
 
-    # Convert BGR → RGB before grayscale
     rgb_img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     gray = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2GRAY)
 
-    # Resize and expand back to 3 channels
-    resized = cv2.resize(gray, target_size, interpolation=cv2.INTER_AREA)
+    resized = cv2.resize(gray, target_size)
     rgb = cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
 
-    # Do NOT normalize here — MobileNet will handle it
     return rgb.astype(np.float32)
 
 
 def detect_faces_in_image(image, face_cascade_path=None):
-    """Detect faces in an image using Haar Cascade."""
     if face_cascade_path is None:
         face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
     else:
         face_cascade = cv2.CascadeClassifier(face_cascade_path)
@@ -71,194 +56,215 @@ def detect_faces_in_image(image, face_cascade_path=None):
 
 
 def extract_face_from_frame(frame, face_bbox, margin=0.2):
-    """Extract and preprocess a face from a frame."""
     x, y, w, h = face_bbox
-    margin_x = int(w * margin)
-    margin_y = int(h * margin)
 
-    x1 = max(0, x - margin_x)
-    y1 = max(0, y - margin_y)
-    x2 = min(frame.shape[1], x + w + margin_x)
-    y2 = min(frame.shape[0], y + h + margin_y)
+    mx, my = int(w * margin), int(h * margin)
+
+    x1 = max(0, x - mx)
+    y1 = max(0, y - my)
+    x2 = min(frame.shape[1], x + w + mx)
+    y2 = min(frame.shape[0], y + h + my)
 
     face = frame[y1:y2, x1:x2]
     return preprocess_face_image(face)
 
 
-def load_face_dataset(dataset_path, img_size=(96, 96), emotions=None):
-    """Load face emotion dataset from directory structure."""
+def load_clean_face_dataset(dataset_path, img_size=(96, 96), emotions=None):
     if emotions is None:
-        emotions = config.EMOTIONS  # unified reference
+        emotions = config.EMOTIONS
 
-    def load_images_from_folder(folder_path):
-        images, labels = [], []
+    def load_split(split):
+        X, y = [], []
+        split_path = os.path.join(dataset_path, split)
 
-        for emotion_idx, emotion in enumerate(emotions):
-            emotion_path = os.path.join(folder_path, emotion)
-            if not os.path.exists(emotion_path):
-                print(f"Warning: {emotion_path} not found.")
+        for idx, emotion in enumerate(emotions):
+            folder = os.path.join(split_path, emotion)
+            if not os.path.exists(folder):
+                print(f"[WARN] Missing: {folder}")
                 continue
 
-            print(f"Loading {emotion} images from {emotion_path}...")
+            for f in os.listdir(folder):
+                if f.lower().endswith((".jpg", ".jpeg", ".png")):
+                    img = cv2.imread(os.path.join(folder, f))
+                    if img is None:
+                        continue
 
-            for img_file in os.listdir(emotion_path):
-                if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    img_path = os.path.join(emotion_path, img_file)
-                    try:
-                        img = cv2.imread(img_path)
-                        if img is None:
-                            continue
+                    X.append(preprocess_face_image(img, img_size))
+                    y.append(idx)
 
-                        preprocessed = preprocess_face_image(img, img_size)
-                        images.append(preprocessed)
-                        labels.append(emotion_idx)
+        return np.array(X), keras.utils.to_categorical(y, len(emotions))
 
-                    except Exception as e:
-                        print(f"Error loading {img_path}: {e}")
+    print("🔄 Loading CLEAN dataset...")
+    X_train, y_train = load_split("train")
+    X_val, y_val = load_split("val")
+    X_test, y_test = load_split("test")
 
-        return np.array(images), np.array(labels)
-
-    X_train, y_train = load_images_from_folder(os.path.join(dataset_path, 'train'))
-    X_test, y_test = load_images_from_folder(os.path.join(dataset_path, 'test'))
-
-    y_train = keras.utils.to_categorical(y_train, len(emotions))
-    y_test = keras.utils.to_categorical(y_test, len(emotions))
-
-    print(f"✅ Loaded {len(X_train)} training and {len(X_test)} test images.")
-    print(f"📏 Image shape: {X_train.shape[1:]}")
-    return X_train, y_train, X_test, y_test
+    print(f"TRAIN: {len(X_train)} | VAL: {len(X_val)} | TEST: {len(X_test)}")
+    return X_train, y_train, X_val, y_val, X_test, y_test
 
 
-# ============================================
-# VOICE PREPROCESSING (TORCHAUDIO ONLY)
-# ============================================
+# ===========================================================
+# VOICE PREPROCESSING (librosa mel-spectrogram)
+# ===========================================================
 
-def extract_voice_features(
-    audio_path, sample_rate=22050, duration=3, n_mfcc=40, n_mels=128
-):
-    """Extract MFCC features using torchaudio (no librosa, no numba)."""
+SAMPLE_RATE = 16000
+AUDIO_DURATION = 3
+SAMPLES = SAMPLE_RATE * AUDIO_DURATION
+
+
+# ---------------------------
+# SAFE AUDIO AUGMENTATION
+# ---------------------------
+def augment_audio(y, sr):
+
+    # Pitch Shift
+    if random.random() < 0.3:
+        try:
+            y = librosa.effects.pitch_shift(
+                y=y,
+                sr=sr,
+                n_steps=random.uniform(-2, 2)
+            )
+        except:
+            pass
+
+    # Time Stretch (safe implementation)
+    if random.random() < 0.3:
+        rate = random.uniform(0.8, 1.2)
+        try:
+            y = librosa.effects.time_stretch(y, rate)
+        except:
+            pass
+
+    # Add noise
+    if random.random() < 0.3:
+        noise = np.random.randn(len(y)) * 0.005
+        y = y + noise
+
+    return y
+
+
+# ---------------------------
+# MEL-SPECTROGRAM
+# ---------------------------
+def audio_to_melspec(path, augment=False):
+    y, sr = librosa.load(path, sr=SAMPLE_RATE)
+
+    # Pad / trim
+    if len(y) < SAMPLES:
+        y = np.pad(y, (0, SAMPLES - len(y)))
+    else:
+        y = y[:SAMPLES]
+
+    if augment:
+        y = augment_audio(y, sr)
+
+    mel = librosa.feature.melspectrogram(
+        y=y,
+        sr=sr,
+        n_mels=128,
+        hop_length=256
+    )
+    mel = librosa.power_to_db(mel, ref=np.max)
+
+    mel = cv2.resize(mel, (128, 128))
+    mel = mel.astype("float32")
+
+    return mel.reshape(128, 128, 1)
+
+
+# ===========================================================
+# VOICE FEATURE EXTRACTION (torchaudio MFCC)
+# ===========================================================
+
+def extract_voice_features(audio_path, sample_rate=22050, duration=3,
+                           n_mfcc=40, n_mels=128):
+
     try:
-        waveform, sr = torchaudio.load(audio_path)
+        wav, sr = torchaudio.load(audio_path)
 
-        # Ensure mono
-        waveform = torch.mean(waveform, dim=0, keepdim=True)
+        wav = torch.mean(wav, dim=0, keepdim=True)
 
-        # Resample if needed
         if sr != sample_rate:
-            resampler = torchaudio.transforms.Resample(sr, sample_rate)
-            waveform = resampler(waveform)
+            wav = torchaudio.transforms.Resample(sr, sample_rate)(wav)
 
-        # Ensure fixed duration
-        target_len = sample_rate * duration
-        if waveform.shape[1] > target_len:
-            waveform = waveform[:, :target_len]
+        target = sample_rate * duration
+        L = wav.shape[1]
+
+        if L > target:
+            wav = wav[:, :target]
         else:
-            pad_len = target_len - waveform.shape[1]
-            waveform = torch.nn.functional.pad(waveform, (0, pad_len))
+            wav = torch.nn.functional.pad(wav, (0, target - L))
 
-        # Extract MFCC
-        mfcc_transform = torchaudio.transforms.MFCC(
+        mfcc = torchaudio.transforms.MFCC(
             sample_rate=sample_rate,
             n_mfcc=n_mfcc,
             melkwargs={"n_mels": n_mels}
-        )
+        )(wav)
 
-        mfcc = mfcc_transform(waveform)
         mfcc = mfcc.squeeze(0).numpy()
-
-        # Normalize
-        mfcc = (mfcc - np.mean(mfcc)) / (np.std(mfcc) + 1e-6)
-        return mfcc
-
-    except Exception as e:
-        print(f"[ERROR] Failed audio extraction: {audio_path}")
-        print(f"Detail: {e}")
-        return None
-
-
-def extract_features_from_audio_buffer(
-    audio_buffer, sample_rate=22050, n_mfcc=40, n_mels=128
-):
-    """Extract MFCC from raw audio buffer for real-time inference."""
-    try:
-        waveform = torch.tensor(audio_buffer).float().unsqueeze(0)
-
-        mfcc_transform = torchaudio.transforms.MFCC(
-            sample_rate=sample_rate,
-            n_mfcc=n_mfcc,
-            melkwargs={"n_mels": n_mels}
-        )
-
-        mfcc = mfcc_transform(waveform).squeeze(0).numpy()
         mfcc = (mfcc - np.mean(mfcc)) / (np.std(mfcc) + 1e-6)
 
         return mfcc
 
     except Exception as e:
-        print(f"Error extracting features from buffer: {e}")
+        print(f"[ERROR] MFCC failed for: {audio_path}")
+        print(e)
         return None
 
 
-def load_voice_dataset(dataset_path, sample_rate=22050, duration=3,
-                       n_mfcc=40, n_mels=128, emotions=None):
+# ===========================================================
+# LOAD VOICE DATASET
+# ===========================================================
+def load_voice_dataset(dataset_path, emotions=None, augment=False):
 
     if emotions is None:
         emotions = config.MODEL_EMOTIONS
 
-    def load_audio_from_folder(folder_path):
-        features, labels = [], []
+    X, Y = [], []
 
-        for emotion_idx, emotion in enumerate(emotions):
-            emotion_path = os.path.join(folder_path, emotion)
+    print(f"📌 Loading voice dataset from: {dataset_path}")
 
-            if not os.path.exists(emotion_path):
-                print(f"Warning: {emotion_path} missing.")
+    for idx, emo in enumerate(emotions):
+        emo_path = os.path.join(dataset_path, emo)
+        if not os.path.exists(emo_path):
+            print(f"[WARN] Missing folder: {emo_path}")
+            continue
+
+        print(f"→ Loading {emo}...")
+
+        for f in os.listdir(emo_path):
+            if not f.lower().endswith((".wav", ".mp3", ".flac")):
                 continue
 
-            print(f"Loading {emotion} audio from {emotion_path}...")
+            file_path = os.path.join(emo_path, f)
 
-            for file in os.listdir(emotion_path):
-                if file.lower().endswith((".wav", ".mp3", ".flac")):
-                    feat = extract_voice_features(
-                        os.path.join(emotion_path, file),
-                        sample_rate, duration, n_mfcc, n_mels
-                    )
+            # training script uses mel-spectrogram
+            mel = audio_to_melspec(file_path, augment=augment)
 
-                    if feat is not None:
-                        features.append(feat)
-                        labels.append(emotion_idx)
+            X.append(mel)
+            Y.append(idx)
 
-        return np.array(features), np.array(labels)
+    X = np.array(X)
+    Y = keras.utils.to_categorical(Y, len(emotions))
 
-    X_train, y_train = load_audio_from_folder(os.path.join(dataset_path, "train"))
-    X_test, y_test = load_audio_from_folder(os.path.join(dataset_path, "test"))
-
-    y_train = keras.utils.to_categorical(y_train, len(emotions))
-    y_test = keras.utils.to_categorical(y_test, len(emotions))
-
-    return X_train, y_train, X_test, y_test
+    return X, Y
 
 
-# ============================================
-# EMOTION SMOOTHING
-# ============================================
-
+# ===========================================================
+# EMOTION SMOOTHER
+# ===========================================================
 class EmotionSmoother:
-    """Smooth emotion predictions over time using moving average."""
-    
+
     def __init__(self, window_size=5):
-        self.window_size = window_size
-        self.predictions_history = []
-    
-    def update(self, prediction):
-        self.predictions_history.append(prediction)
-        if len(self.predictions_history) > self.window_size:
-            self.predictions_history.pop(0)
-        return np.mean(self.predictions_history, axis=0)
-    
+        self.window = window_size
+        self.history = []
+
+    def update(self, pred):
+        self.history.append(pred)
+        if len(self.history) > self.window:
+            self.history.pop(0)
+        return np.mean(self.history, axis=0)
+
     def reset(self):
-        self.predictions_history = []
-
-
-if __name__ == "__main__":
-    print("Data preprocessing utilities loaded successfully!")
+        self.history = []
