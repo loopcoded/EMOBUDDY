@@ -3,6 +3,24 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers, models, regularizers
 
+# Enable GPU memory growth + mixed precision (best for NVIDIA GPUs)
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print(f"GPUs detected: {gpus}")
+    except RuntimeError as e:
+        print(e)
+else:
+    print("⚠ No GPU detected. Using CPU.")
+
+# Enable mixed precision for major speed boost on RTX cards
+from tensorflow.keras import mixed_precision
+mixed_precision.set_global_policy("mixed_float16")
+print("Mixed precision enabled.")
+
+
 class FocalLoss(keras.losses.Loss):
     def __init__(self, alpha=0.25, gamma=2.0, label_smoothing=0.0, **kwargs):
         super().__init__(**kwargs)
