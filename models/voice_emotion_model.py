@@ -93,7 +93,7 @@ class VoiceEmotionModel:
         x = layers.Reshape((seq_len, 128))(x)
 
         # Bi-GRU for temporal modelling
-        x = layers.Bidirectional(layers.GRU(128, return_sequences=True))(x)  # (batch, seq_len, 256)
+        x = layers.Bidirectional(layers.GRU(64, return_sequences=True))(x)
 
         # Attention layer reduces (batch, seq_len, 256) -> (batch, 256)
         x = AttentionLayer()(x)

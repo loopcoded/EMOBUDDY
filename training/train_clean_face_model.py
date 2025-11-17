@@ -1,12 +1,13 @@
-# training/train_clean_face_model.py
+# training/train_face_cnn_96_improved.py
 
 import os
 import tensorflow as tf
 from tensorflow import keras
-from sklearn.utils.class_weight import compute_class_weight
 import numpy as np
 
-from models.face_emotion_model import FaceEmotionModelTL
+from models.face_emotion_model import ImprovedFaceCNN
+from utils.data_preprocessing import load_clean_face_dataset
+from config import config
 
 
 # -------------------------
@@ -17,170 +18,114 @@ if gpus:
     try:
         for g in gpus:
             tf.config.experimental.set_memory_growth(g, True)
-    except:
-        pass
+        print(f"GPUs detected: {gpus}")
+    except RuntimeError as e:
+        print(e)
+else:
+    print("⚠ No GPU detected. Using CPU.")
 
 
 # -------------------------
 # CONFIG
 # -------------------------
 DATASET_PATH = "datasets/clean_face_emotions/"
-SAVE_PATH = "static/models/face_emotion_final"  # SavedModel folder
+IMG_SIZE = (96, 96)
+BATCH_SIZE = 64
+EPOCHS = 40
 
-IMG_SIZE = (224, 224)
-BATCH_SIZE = 32
-EPOCHS_HEAD = 6
-EPOCHS_FINE = 18
-
-LR_HEAD = 1e-3
-LR_FINE = 5e-5
-LABEL_SMOOTHING = 0.05
-
-NUM_CLASSES = 7
+NUM_CLASSES = len(config.EMOTIONS)
+MODEL_SAVE_PATH = "static/models/face_emotion_cnn_96_improved.keras"
 
 
-# -------------------------
-# LOAD DATASET FROM DISK
-# -------------------------
-def load_dataset_from_disk():
-    """
-    Loads train/val/test datasets using tf.image_dataset_from_directory
-    (streams from disk → no RAM explosion)
-    """
-
-    train_ds = tf.keras.preprocessing.image_dataset_from_directory(
-        DATASET_PATH + "train",
-        labels="inferred",
-        label_mode="categorical",
-        image_size=IMG_SIZE,
-        batch_size=BATCH_SIZE,
-        shuffle=True
-    )
-
-    val_ds = tf.keras.preprocessing.image_dataset_from_directory(
-        DATASET_PATH + "val",
-        labels="inferred",
-        label_mode="categorical",
-        image_size=IMG_SIZE,
-        batch_size=BATCH_SIZE,
-        shuffle=False
-    )
-
-    test_ds = tf.keras.preprocessing.image_dataset_from_directory(
-        DATASET_PATH + "test",
-        labels="inferred",
-        label_mode="categorical",
-        image_size=IMG_SIZE,
-        batch_size=BATCH_SIZE,
-        shuffle=False
-    )
-
-    # Performance optimizations
-    train_ds = train_ds.prefetch(tf.data.AUTOTUNE)
-    val_ds = val_ds.prefetch(tf.data.AUTOTUNE)
-    test_ds = test_ds.prefetch(tf.data.AUTOTUNE)
-
-    return train_ds, val_ds, test_ds
-
-
-# -------------------------------------------------
-# COMPUTE CLASS WEIGHTS (for imbalanced datasets)
-# -------------------------------------------------
-def compute_class_weights_from_dataset(train_ds):
-    labels = []
-    for _, y in train_ds.unbatch().take(20000):  # sample 20k only to speed up
-        labels.append(np.argmax(y.numpy()))
-
-    labels = np.array(labels)
-    classes = np.unique(labels)
-
-    cw = compute_class_weight(
-        class_weight="balanced",
-        classes=classes,
-        y=labels
-    )
-
-    cw = {int(c): float(w) for c, w in zip(classes, cw)}
-    print("Class Weights:", cw)
-    return cw
-
-
-# -------------------------
-# TRAINING PIPELINE
-# -------------------------
 def train():
+    # -------------------------
+    # LOAD DATA
+    # -------------------------
+    print("🔄 Loading CLEAN dataset (face)...")
+    X_train, y_train, X_val, y_val, X_test, y_test = load_clean_face_dataset(
+        DATASET_PATH,
+        img_size=IMG_SIZE
+    )
 
-    print("🔄 Loading dataset from disk...")
-    train_ds, val_ds, test_ds = load_dataset_from_disk()
+    print("TRAIN:", X_train.shape, "| VAL:", X_val.shape, "| TEST:", X_test.shape)
 
-    # Compute weights
-    class_weight = compute_class_weights_from_dataset(train_ds)
+    # NOTE: No /255.0 here because the model has a Rescaling(1/255)
 
-    print("📌 Building model...")
-    model_inst = FaceEmotionModelTL(
-        num_classes=NUM_CLASSES,
+    # -------------------------
+    # BUILD MODEL
+    # -------------------------
+    print("📌 Building ImprovedFaceCNN model...")
+    model_builder = ImprovedFaceCNN(
         input_shape=(IMG_SIZE[0], IMG_SIZE[1], 3),
-        backbone="mobilenetv2"
+        num_classes=NUM_CLASSES
     )
-
-    model = model_inst.build_model(backbone_trainable=False)
+    model = model_builder.build()
+    model.summary()
 
     # -------------------------
-    # PHASE 1: Train Head
+    # COMPILE
     # -------------------------
-    print("\n===== PHASE 1: Train Head =====")
-    model_inst.compile_model(
-        lr=LR_HEAD,
-        label_smoothing=LABEL_SMOOTHING,
-        use_focal_loss=False
-    )
+    optimizer = keras.optimizers.Adam(learning_rate=1e-3)
 
-    callbacks = model_inst.get_callbacks(
-        model_path=SAVE_PATH,
-        patience=8
-    )
-
-    model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=EPOCHS_HEAD,
-        class_weight=class_weight,
-        callbacks=callbacks
+    model.compile(
+        optimizer=optimizer,
+        loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.05),
+        metrics=[
+            "accuracy",
+            keras.metrics.TopKCategoricalAccuracy(k=2, name="top_2_accuracy"),
+        ],
     )
 
     # -------------------------
-    # PHASE 2: Fine-Tune Backbone
+    # CALLBACKS
     # -------------------------
-    print("\n===== PHASE 2: Fine-Tune Backbone =====")
+    callbacks = [
+        keras.callbacks.EarlyStopping(
+            monitor="val_accuracy",
+            patience=7,
+            mode="max",
+            restore_best_weights=True,
+        ),
+        keras.callbacks.ReduceLROnPlateau(
+            monitor="val_loss",
+            factor=0.5,
+            patience=3,
+            verbose=1,
+        ),
+        keras.callbacks.ModelCheckpoint(
+            filepath=MODEL_SAVE_PATH,
+            monitor="val_accuracy",
+            mode="max",
+            save_best_only=True,
+            save_weights_only=False,
+            verbose=1,
+        ),
+    ]
 
-    # Unfreeze last ~30 layers
-    model_inst.unfreeze_backbone()
-
-    model_inst.compile_model(
-        lr=LR_FINE,
-        label_smoothing=LABEL_SMOOTHING,
-        use_focal_loss=True
+    # -------------------------
+    # TRAIN
+    # -------------------------
+    print("\n===== TRAINING ImprovedFaceCNN =====")
+    history = model.fit(
+        X_train,
+        y_train,
+        validation_data=(X_val, y_val),
+        epochs=EPOCHS,
+        batch_size=BATCH_SIZE,
+        callbacks=callbacks,
+        shuffle=True,
     )
 
-    model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=EPOCHS_FINE,
-        class_weight=class_weight,
-        callbacks=callbacks
-    )
-
     # -------------------------
-    # FINAL EVAL
+    # EVALUATE
     # -------------------------
-    print("\n📌 Loading Best Model...")
-    model_inst.load_model(SAVE_PATH)
+    print("\n📊 Final Test Evaluation (using best weights in memory):")
+    test_metrics = model.evaluate(X_test, y_test, batch_size=BATCH_SIZE)
+    print(test_metrics)
 
-    print("\n📊 Validation Evaluation:")
-    print(model_inst.model.evaluate(val_ds))
-
-    print("\n📊 Test Evaluation:")
-    print(model_inst.model.evaluate(test_ds))
+    # Optional: explicitly save final best model again
+    print(f"\n💾 Saving final model to: {MODEL_SAVE_PATH}")
+    model.save(MODEL_SAVE_PATH)
 
 
 if __name__ == "__main__":

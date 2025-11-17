@@ -10,7 +10,8 @@ class Config:
     PORT = 5000
     
     # Emotion Definitions
-    EMOTIONS = ['angry', 'happy', 'disgust', 'fear', 'sad', 'surprise', 'neutral']
+    EMOTIONS = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
+
     MODEL_EMOTIONS = EMOTIONS  # Alias for compatibility
     NUM_EMOTIONS = len(EMOTIONS)
 

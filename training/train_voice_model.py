@@ -84,10 +84,12 @@ def train():
     model.fit(
         X_train, y_train,
         validation_data=(X_val, y_val),
-        epochs=40,
-        batch_size=32,
+        epochs=60,
+        batch_size=16,
+        shuffle=True,
         callbacks=callbacks
     )
+
 
     print("📌 Evaluating...")
     print(model.evaluate(X_test, y_test))

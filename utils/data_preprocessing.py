@@ -150,27 +150,35 @@ def augment_audio(y, sr):
 def audio_to_melspec(path, augment=False):
     y, sr = librosa.load(path, sr=SAMPLE_RATE)
 
-    # Pad / trim
+    # Pad or trim to fixed length
     if len(y) < SAMPLES:
         y = np.pad(y, (0, SAMPLES - len(y)))
     else:
         y = y[:SAMPLES]
 
-    if augment:
+    # Gentle augmentation (fixing your overly aggressive version)
+    if augment and random.random() < 0.5:
         y = augment_audio(y, sr)
 
+    # Compute mel (safe parameters)
     mel = librosa.feature.melspectrogram(
         y=y,
         sr=sr,
         n_mels=128,
-        hop_length=256
+        hop_length=256,
+        power=2.0
     )
+
     mel = librosa.power_to_db(mel, ref=np.max)
 
-    mel = cv2.resize(mel, (128, 128))
-    mel = mel.astype("float32")
+    # Normalize between 0–1 (CRITICAL FIX)
+    mel = (mel - mel.min()) / (mel.max() - mel.min() + 1e-8)
 
-    return mel.reshape(128, 128, 1)
+    # Resize
+    mel = cv2.resize(mel, (128, 128))
+
+    return mel.astype("float32").reshape(128, 128, 1)
+
 
 
 # ===========================================================
